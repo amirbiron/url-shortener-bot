@@ -1,0 +1,69 @@
+services:
+  # Web Service (Flask + Telegram Bot)
+  - type: web
+    name: url-shortener-bot
+    env: python
+    region: frankfurt  # or oregon, singapore, etc.
+    plan: free  # free tier
+    
+    # Build Command
+    buildCommand: pip install -r requirements.txt
+    
+    # Start Command (using Hypercorn for async support)
+    startCommand: hypercorn app:app --bind 0.0.0.0:$PORT
+    
+    # Environment Variables
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      
+      - key: BOT_TOKEN
+        sync: false  # Set manually in Render dashboard
+      
+      - key: WEBHOOK_URL
+        sync: false  # Set manually (your Render app URL)
+      
+      - key: MONGODB_URI
+        sync: false  # Set manually (your MongoDB connection string)
+      
+      - key: DB_NAME
+        value: url_shortener
+      
+      - key: SECRET_KEY
+        generateValue: true  # Auto-generate random secret
+      
+      - key: PORT
+        value: 10000
+      
+      - key: DEBUG
+        value: False
+      
+      - key: SHORT_CODE_LENGTH
+        value: 6
+      
+      - key: BASE_URL
+        sync: false  # Set manually (your Render app URL)
+      
+      - key: MAX_URLS_PER_HOUR
+        value: 10
+      
+      - key: MAX_URLS_PER_DAY
+        value: 50
+      
+      - key: MAX_URL_LENGTH
+        value: 2048
+      
+      - key: BLOCKED_DOMAINS
+        value: ""
+      
+      - key: QR_BOX_SIZE
+        value: 10
+      
+      - key: QR_BORDER
+        value: 4
+    
+    # Health Check
+    healthCheckPath: /health
+    
+    # Auto-Deploy
+    autoDeploy: true
