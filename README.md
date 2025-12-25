@@ -80,6 +80,7 @@ url-shortener-bot/
 | Variable | Value | Example |
 |----------|-------|---------|
 | `BOT_TOKEN` | הטוקן מ-BotFather | `1234567890:ABCdef...` |
+| `WEBHOOK_SECRET_TOKEN` | טוקן סודי ל-webhook (לא ה-BOT_TOKEN) | `a3f1c9...` |
 | `WEBHOOK_URL` | ה-URL של האפליקציה ב-Render | `https://your-app.onrender.com` |
 | `BASE_URL` | אותו URL | `https://your-app.onrender.com` |
 | `MONGODB_URI` | Connection string מ-MongoDB | `mongodb+srv://...` |
@@ -177,7 +178,7 @@ python app.py
 # Terminal 2 - הגדר webhook (פעם אחת)
 curl -X POST "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook" \
   -d "url=https://your-ngrok-url.ngrok.io/telegram/webhook" \
-  -d "secret_token=<YOUR_BOT_TOKEN>"
+  -d "secret_token=<YOUR_WEBHOOK_SECRET_TOKEN>"
 ```
 
 **טיפ:** השתמש ב-[ngrok](https://ngrok.com) כדי לחשוף localhost:
@@ -357,7 +358,7 @@ db.users.createIndex({ user_id: 1 }, { unique: true })
   ```bash
   curl -X POST "https://api.telegram.org/bot<TOKEN>/setWebhook" \
     -d "url=https://your-app.onrender.com/telegram/webhook" \
-    -d "secret_token=<TOKEN>"
+    -d "secret_token=<WEBHOOK_SECRET_TOKEN>"
   ```
 
 ## 🔄 עדכונים

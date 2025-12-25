@@ -160,6 +160,7 @@ README.md
 |-----|-------|-------|
 | `BOT_TOKEN` | `1234567890:ABC...` | מ-@BotFather |
 | `MONGODB_URI` | `mongodb+srv://...` | מ-MongoDB Atlas |
+| `WEBHOOK_SECRET_TOKEN` | `...` | טוקן סודי ל-webhook (לא ה-BOT_TOKEN). חייב להיות רק [A-Za-z0-9_-] |
 | `WEBHOOK_URL` | *(נשאיר ריק כרגע)* | נעדכן אחר כך |
 | `BASE_URL` | *(נשאיר ריק כרגע)* | נעדכן אחר כך |
 | `DB_NAME` | `url_shortener` | |
@@ -232,7 +233,7 @@ curl https://api.telegram.org/bot<TOKEN>/getWebhookInfo
 אתה אמור לראות:
 ```json
 {
-  "url": "https://your-app.onrender.com/<TOKEN>",
+  "url": "https://your-app.onrender.com/telegram/webhook",
   "has_custom_certificate": false,
   "pending_update_count": 0,
   "last_error_date": 0
