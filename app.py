@@ -1,10 +1,10 @@
 """
-URL Shortener Bot - Flask Server
+URL Shortener Bot - Quart Server
 =================================
-שרת Flask עם webhook לטלגרם ו-routes לקיצור URLs
+שרת Quart (ASGI) עם webhook לטלגרם ו-routes לקיצור URLs
 """
 
-from flask import Flask, request, redirect, jsonify, send_file
+from quart import Quart, request, redirect, jsonify, send_file
 import logging
 from telegram import Update
 from config import Config
@@ -19,8 +19,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# יצירת Flask app
-app = Flask(__name__)
+# יצירת Quart app (ASGI) - מתאים ל-Hypercorn ול-async lifecycle hooks
+app = Quart(__name__)
 app.config['SECRET_KEY'] = Config.SECRET_KEY
 
 # יצירת bot application
@@ -30,7 +30,7 @@ bot_application = create_bot_application()
 # ==================== Routes ====================
 
 @app.route('/')
-def index():
+async def index():
     """
     עמוד הבית
     """
@@ -42,7 +42,7 @@ def index():
 
 
 @app.route('/health')
-def health():
+async def health():
     """
     בדיקת תקינות השרת
     """
@@ -59,7 +59,7 @@ async def webhook():
     """
     try:
         # קבלת העדכון מטלגרם
-        json_data = request.get_json()
+        json_data = await request.get_json()
         
         if not json_data:
             return jsonify({'status': 'error', 'message': 'No data'}), 400
@@ -78,7 +78,7 @@ async def webhook():
 
 
 @app.route('/<short_code>')
-def redirect_url(short_code):
+async def redirect_url(short_code):
     """
     Redirect מקוד קצר ל-URL המקורי
     
@@ -114,7 +114,7 @@ def redirect_url(short_code):
 
 
 @app.route('/qr/<short_code>')
-def qr_code(short_code):
+async def qr_code(short_code):
     """
     יצירת QR code עבור קישור
     
@@ -140,7 +140,7 @@ def qr_code(short_code):
         qr_image = generate_qr(short_url)
         
         # שליחת התמונה
-        return send_file(
+        return await send_file(
             qr_image,
             mimetype='image/png',
             as_attachment=False,
@@ -153,7 +153,7 @@ def qr_code(short_code):
 
 
 @app.route('/api/stats/<short_code>')
-def get_stats(short_code):
+async def get_stats(short_code):
     """
     משיכת סטטיסטיקות של קישור (API endpoint)
     
@@ -195,7 +195,7 @@ def get_stats(short_code):
 
 
 @app.route('/api/shorten', methods=['POST'])
-def api_shorten():
+async def api_shorten():
     """
     API endpoint לקיצור URL (לשימוש חיצוני עתידי)
     
@@ -209,7 +209,7 @@ def api_shorten():
         JSON עם הקישור הקצר
     """
     try:
-        data = request.get_json()
+        data = await request.get_json()
         
         if not data or 'url' not in data:
             return jsonify({
@@ -276,7 +276,7 @@ def api_shorten():
 # ==================== Error Handlers ====================
 
 @app.errorhandler(404)
-def not_found(error):
+async def not_found(error):
     """טיפול ב-404"""
     return jsonify({
         'error': 'Not found',
@@ -285,7 +285,7 @@ def not_found(error):
 
 
 @app.errorhandler(500)
-def internal_error(error):
+async def internal_error(error):
     """טיפול ב-500"""
     return jsonify({
         'error': 'Internal server error',
@@ -332,7 +332,7 @@ async def startup():
     """
     אתחול השרת
     """
-    logger.info("🚀 Starting Flask server...")
+    logger.info("🚀 Starting Quart server...")
     
     # אתחול הבוט
     await bot_application.initialize()
@@ -381,8 +381,8 @@ if __name__ == '__main__':
         await remove_webhook()
         await bot_application.shutdown()
         
-        # הרצת Flask
-        app.run(
+        # הרצת Quart (development)
+        await app.run_task(
             host='0.0.0.0',
             port=Config.PORT,
             debug=Config.DEBUG

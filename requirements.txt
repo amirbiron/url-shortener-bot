@@ -1,6 +1,6 @@
 # Core Dependencies
 python-telegram-bot>=21.0
-flask==3.0.0
+quart>=0.20.0
 pymongo==4.6.1
 gunicorn==21.2.0
 hypercorn==0.16.0

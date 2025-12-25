@@ -21,7 +21,7 @@ class Config:
     MONGODB_URI = os.getenv('MONGODB_URI')
     DB_NAME = os.getenv('DB_NAME', 'url_shortener')
     
-    # Flask
+    # Web Server (Quart)
     SECRET_KEY = os.getenv('SECRET_KEY', 'your-secret-key-change-in-production')
     PORT = int(os.getenv('PORT', 5000))
     DEBUG = os.getenv('DEBUG', 'False').lower() == 'true'
