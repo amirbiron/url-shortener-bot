@@ -1,0 +1,391 @@
+"""
+URL Shortener Bot - Flask Server
+=================================
+שרת Flask עם webhook לטלגרם ו-routes לקיצור URLs
+"""
+
+from flask import Flask, request, redirect, jsonify, send_file
+import logging
+from telegram import Update
+from config import Config
+from database import get_url, increment_clicks
+from bot import create_bot_application
+import asyncio
+
+# הגדרת לוגים
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+# יצירת Flask app
+app = Flask(__name__)
+app.config['SECRET_KEY'] = Config.SECRET_KEY
+
+# יצירת bot application
+bot_application = create_bot_application()
+
+
+# ==================== Routes ====================
+
+@app.route('/')
+def index():
+    """
+    עמוד הבית
+    """
+    return jsonify({
+        'status': 'ok',
+        'service': 'URL Shortener Bot',
+        'version': '1.0.0'
+    })
+
+
+@app.route('/health')
+def health():
+    """
+    בדיקת תקינות השרת
+    """
+    return jsonify({
+        'status': 'healthy',
+        'service': 'url-shortener-bot'
+    }), 200
+
+
+@app.route(f'/{Config.BOT_TOKEN}', methods=['POST'])
+async def webhook():
+    """
+    Webhook לקבלת עדכונים מטלגרם
+    """
+    try:
+        # קבלת העדכון מטלגרם
+        json_data = request.get_json()
+        
+        if not json_data:
+            return jsonify({'status': 'error', 'message': 'No data'}), 400
+        
+        # המרה ל-Update object
+        update = Update.de_json(json_data, bot_application.bot)
+        
+        # עיבוד העדכון
+        await bot_application.process_update(update)
+        
+        return jsonify({'status': 'ok'}), 200
+        
+    except Exception as e:
+        logger.error(f"Error in webhook: {e}")
+        return jsonify({'status': 'error', 'message': str(e)}), 500
+
+
+@app.route('/<short_code>')
+def redirect_url(short_code):
+    """
+    Redirect מקוד קצר ל-URL המקורי
+    
+    Args:
+        short_code: הקוד הקצר
+        
+    Returns:
+        Redirect או 404
+    """
+    try:
+        # משיכת ה-URL מה-DB
+        url_doc = get_url(short_code)
+        
+        if not url_doc:
+            return jsonify({
+                'error': 'URL not found',
+                'short_code': short_code
+            }), 404
+        
+        # עדכון מונה הקליקים
+        increment_clicks(short_code)
+        
+        # Redirect
+        original_url = url_doc['original_url']
+        
+        logger.info(f"Redirecting {short_code} -> {original_url}")
+        
+        return redirect(original_url, code=301)
+        
+    except Exception as e:
+        logger.error(f"Error in redirect: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+
+@app.route('/qr/<short_code>')
+def qr_code(short_code):
+    """
+    יצירת QR code עבור קישור
+    
+    Args:
+        short_code: הקוד הקצר
+        
+    Returns:
+        תמונת QR או 404
+    """
+    try:
+        # בדיקה שהקוד קיים
+        url_doc = get_url(short_code)
+        
+        if not url_doc:
+            return jsonify({
+                'error': 'URL not found',
+                'short_code': short_code
+            }), 404
+        
+        # יצירת QR
+        from utils import generate_qr
+        short_url = f"{Config.BASE_URL}/{short_code}"
+        qr_image = generate_qr(short_url)
+        
+        # שליחת התמונה
+        return send_file(
+            qr_image,
+            mimetype='image/png',
+            as_attachment=False,
+            download_name=f'qr_{short_code}.png'
+        )
+        
+    except Exception as e:
+        logger.error(f"Error generating QR: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+
+@app.route('/api/stats/<short_code>')
+def get_stats(short_code):
+    """
+    משיכת סטטיסטיקות של קישור (API endpoint)
+    
+    Args:
+        short_code: הקוד הקצר
+        
+    Returns:
+        JSON עם סטטיסטיקות
+    """
+    try:
+        url_doc = get_url(short_code)
+        
+        if not url_doc:
+            return jsonify({
+                'error': 'URL not found',
+                'short_code': short_code
+            }), 404
+        
+        # החזרת נתונים
+        from utils import DateFormatter
+        
+        stats = {
+            'short_code': short_code,
+            'original_url': url_doc['original_url'],
+            'short_url': f"{Config.BASE_URL}/{short_code}",
+            'clicks': url_doc.get('clicks', 0),
+            'created_at': DateFormatter.format_datetime(url_doc['created_at']),
+            'last_clicked': None
+        }
+        
+        if url_doc.get('last_clicked'):
+            stats['last_clicked'] = DateFormatter.format_datetime(url_doc['last_clicked'])
+        
+        return jsonify(stats), 200
+        
+    except Exception as e:
+        logger.error(f"Error getting stats: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+
+@app.route('/api/shorten', methods=['POST'])
+def api_shorten():
+    """
+    API endpoint לקיצור URL (לשימוש חיצוני עתידי)
+    
+    Body:
+        {
+            "url": "https://example.com/long/url",
+            "user_id": 123456 (optional)
+        }
+    
+    Returns:
+        JSON עם הקישור הקצר
+    """
+    try:
+        data = request.get_json()
+        
+        if not data or 'url' not in data:
+            return jsonify({
+                'error': 'Missing URL parameter'
+            }), 400
+        
+        url = data['url']
+        user_id = data.get('user_id', 0)  # 0 = anonymous
+        
+        # ולידציה
+        from utils import validate_url, generate_short_code, URLValidator
+        
+        url = URLValidator.normalize_url(url)
+        is_safe, reason = validate_url(url)
+        
+        if not is_safe:
+            return jsonify({
+                'error': f'Invalid URL: {reason}'
+            }), 400
+        
+        # בדיקה אם כבר קיים
+        from database import url_repo, create_url
+        
+        existing = url_repo.find_existing(user_id, url)
+        
+        if existing:
+            short_code = existing['short_code']
+        else:
+            # יצירת קוד חדש
+            short_code = None
+            for _ in range(5):
+                temp_code = generate_short_code()
+                if not get_url(temp_code):
+                    short_code = temp_code
+                    break
+            
+            if not short_code:
+                return jsonify({
+                    'error': 'Failed to generate short code'
+                }), 500
+            
+            # שמירה
+            url_doc = create_url(user_id, url, short_code)
+            
+            if not url_doc:
+                return jsonify({
+                    'error': 'Failed to create URL'
+                }), 500
+        
+        # החזרת תוצאה
+        short_url = f"{Config.BASE_URL}/{short_code}"
+        
+        return jsonify({
+            'short_url': short_url,
+            'short_code': short_code,
+            'original_url': url
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error in API shorten: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
+
+
+# ==================== Error Handlers ====================
+
+@app.errorhandler(404)
+def not_found(error):
+    """טיפול ב-404"""
+    return jsonify({
+        'error': 'Not found',
+        'message': 'The requested resource was not found'
+    }), 404
+
+
+@app.errorhandler(500)
+def internal_error(error):
+    """טיפול ב-500"""
+    return jsonify({
+        'error': 'Internal server error',
+        'message': 'Something went wrong on our end'
+    }), 500
+
+
+# ==================== Webhook Setup ====================
+
+async def setup_webhook():
+    """
+    הגדרת webhook לטלגרם
+    """
+    try:
+        webhook_url = f"{Config.WEBHOOK_URL}/{Config.BOT_TOKEN}"
+        
+        await bot_application.bot.set_webhook(
+            url=webhook_url,
+            allowed_updates=["message", "callback_query"]
+        )
+        
+        logger.info(f"✅ Webhook set to: {webhook_url}")
+        
+    except Exception as e:
+        logger.error(f"❌ Error setting webhook: {e}")
+        raise
+
+
+async def remove_webhook():
+    """
+    הסרת webhook (לפיתוח מקומי)
+    """
+    try:
+        await bot_application.bot.delete_webhook()
+        logger.info("✅ Webhook removed")
+    except Exception as e:
+        logger.error(f"❌ Error removing webhook: {e}")
+
+
+# ==================== Application Lifecycle ====================
+
+@app.before_serving
+async def startup():
+    """
+    אתחול השרת
+    """
+    logger.info("🚀 Starting Flask server...")
+    
+    # אתחול הבוט
+    await bot_application.initialize()
+    await bot_application.start()
+    
+    # הגדרת webhook (רק בפרודקשן)
+    if not Config.DEBUG:
+        await setup_webhook()
+    else:
+        logger.info("⚠️ Running in DEBUG mode - webhook disabled")
+    
+    logger.info("✅ Server started successfully")
+
+
+@app.after_serving
+async def shutdown():
+    """
+    סגירת השרת
+    """
+    logger.info("⏹️ Shutting down server...")
+    
+    # סגירת הבוט
+    if not Config.DEBUG:
+        await remove_webhook()
+    
+    await bot_application.stop()
+    await bot_application.shutdown()
+    
+    # סגירת MongoDB
+    from database import db
+    db.close()
+    
+    logger.info("✅ Server shut down successfully")
+
+
+# ==================== Run Server ====================
+
+if __name__ == '__main__':
+    # הרצה מקומית (development)
+    import asyncio
+    
+    async def run_dev():
+        """הרצת שרת פיתוח"""
+        # הסרת webhook אם קיים
+        await bot_application.initialize()
+        await remove_webhook()
+        await bot_application.shutdown()
+        
+        # הרצת Flask
+        app.run(
+            host='0.0.0.0',
+            port=Config.PORT,
+            debug=Config.DEBUG
+        )
+    
+    asyncio.run(run_dev())
