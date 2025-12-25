@@ -52,12 +52,21 @@ async def health():
     }), 200
 
 
-@app.route(f'/{Config.BOT_TOKEN}', methods=['POST'])
+WEBHOOK_PATH = "/telegram/webhook"
+
+
+@app.route(WEBHOOK_PATH, methods=['POST'])
 async def webhook():
     """
     Webhook לקבלת עדכונים מטלגרם
     """
     try:
+        # אימות בסיסי: Telegram ישלח את ה-secret token ב-header
+        # כך לא צריך לחשוף את BOT_TOKEN ב-URL (וגם נמנעות בעיות עם ':' בנתיב).
+        secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
+        if secret != Config.BOT_TOKEN:
+            return jsonify({"status": "forbidden"}), 403
+
         # קבלת העדכון מטלגרם
         json_data = await request.get_json()
         
@@ -300,10 +309,12 @@ async def setup_webhook():
     הגדרת webhook לטלגרם
     """
     try:
-        webhook_url = f"{Config.WEBHOOK_URL}/{Config.BOT_TOKEN}"
+        webhook_url = f"{Config.WEBHOOK_URL}{WEBHOOK_PATH}"
         
         await bot_application.bot.set_webhook(
             url=webhook_url,
+            secret_token=Config.BOT_TOKEN,
+            drop_pending_updates=True,
             allowed_updates=["message", "callback_query"]
         )
         
@@ -355,7 +366,10 @@ async def shutdown():
     logger.info("⏹️ Shutting down server...")
     
     # סגירת הבוט
-    if not Config.DEBUG:
+    # בפרודקשן לא מוחקים webhook בזמן shutdown, כי restarts/deploys יגרמו
+    # לבוט "להיעלם" עד שה-service עולה שוב ומגדיר webhook מחדש.
+    # מחיקה מיועדת רק לפיתוח מקומי (polling).
+    if Config.DEBUG:
         await remove_webhook()
     
     await bot_application.stop()
