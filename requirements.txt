@@ -10,7 +10,7 @@ validators==0.22.0
 
 # QR Code Generation
 qrcode==7.4.2
-pillow==10.1.0
+pillow>=11.1.0,<12
 
 # Environment Variables
 python-dotenv==1.0.0
