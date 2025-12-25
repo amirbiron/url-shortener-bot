@@ -245,6 +245,7 @@ class Keyboards:
     
     # אייקונים
     ICON_SHORTEN = "🔗"
+    ICON_LINK = "🔗"
     ICON_MY_LINKS = "📝"
     ICON_STATS = "📊"
     ICON_HELP = "❓"
