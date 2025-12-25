@@ -1,5 +1,5 @@
 services:
-  # Web Service (Flask + Telegram Bot)
+  # Web Service (Quart + Telegram Bot)
   - type: web
     name: url-shortener-bot
     env: python

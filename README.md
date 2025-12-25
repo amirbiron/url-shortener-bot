@@ -17,7 +17,7 @@
 
 ```
 Frontend:  Telegram Bot (python-telegram-bot)
-Backend:   Flask + Hypercorn (async)
+Backend:   Quart + Hypercorn (async)
 Database:  MongoDB Atlas (Free Tier)
 Hosting:   Render (Free Tier)
 ```
@@ -27,7 +27,7 @@ Hosting:   Render (Free Tier)
 ```
 url-shortener-bot/
 ├── bot.py              # לוגיקת הבוט (handlers, commands)
-├── app.py              # Flask server (webhook, redirect)
+├── app.py              # Quart server (webhook, redirect)
 ├── database.py         # MongoDB operations
 ├── utils.py            # Helper functions (Base62, QR, etc)
 ├── config.py           # Configuration & messages
@@ -171,7 +171,7 @@ python bot.py
 #### Webhook Mode (כמו בפרודקשן)
 
 ```bash
-# Terminal 1 - הרץ את Flask
+# Terminal 1 - הרץ את השרת (Quart)
 python app.py
 
 # Terminal 2 - הגדר webhook (פעם אחת)
@@ -401,7 +401,7 @@ MIT License - ראה את קובץ `LICENSE` לפרטים.
 ## 🙏 תודות
 
 - [python-telegram-bot](https://github.com/python-telegram-bot/python-telegram-bot)
-- [Flask](https://flask.palletsprojects.com/)
+- [Quart](https://pgjones.gitlab.io/quart/)
 - [MongoDB](https://www.mongodb.com/)
 - [Render](https://render.com/)
 
