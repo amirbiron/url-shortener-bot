@@ -5,7 +5,7 @@ URL Shortener Bot - Main Bot Logic
 """
 
 import logging
-from telegram import Update, InputFile, CallbackQuery
+from telegram import Update, InputFile
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -62,63 +62,6 @@ class BotHandlers:
     def __init__(self):
         # מצב המשתמש (לשמירת context בין הודעות)
         self.user_states = {}
-
-    async def _edit_or_reply_text(
-        self,
-        update_or_query,
-        message: str,
-        reply_markup=None,
-        *,
-        parse_mode=None,
-        disable_web_page_preview: bool | None = None,
-    ):
-        """
-        שולח הודעה או עורך הודעה קיימת לפי סוג האובייקט:
-        - Update (פקודות/הודעות)
-        - CallbackQuery (לחיצות על כפתורים)
-        """
-        if isinstance(update_or_query, CallbackQuery):
-            await update_or_query.edit_message_text(
-                message,
-                reply_markup=reply_markup,
-                parse_mode=parse_mode,
-                disable_web_page_preview=disable_web_page_preview,
-            )
-            return
-
-        # Update (או אובייקט דומה)
-        callback_query = getattr(update_or_query, "callback_query", None)
-        if callback_query:
-            await callback_query.edit_message_text(
-                message,
-                reply_markup=reply_markup,
-                parse_mode=parse_mode,
-                disable_web_page_preview=disable_web_page_preview,
-            )
-            return
-
-        msg = getattr(update_or_query, "message", None)
-        if msg:
-            await msg.reply_text(
-                message,
-                reply_markup=reply_markup,
-                parse_mode=parse_mode,
-                disable_web_page_preview=disable_web_page_preview,
-            )
-            return
-
-        # fallback אחרון: שליחה ישירה לצ'אט אם אפשר
-        chat = getattr(update_or_query, "effective_chat", None)
-        if chat:
-            await chat.send_message(
-                message,
-                reply_markup=reply_markup,
-                parse_mode=parse_mode,
-                disable_web_page_preview=disable_web_page_preview,
-            )
-            return
-        
-        raise RuntimeError("Cannot respond: no message/callback_query/effective_chat available")
     
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
@@ -271,7 +214,7 @@ class BotHandlers:
     
     async def _show_my_links(
         self,
-        update_or_query,
+        update: Update,
         context: ContextTypes.DEFAULT_TYPE,
         user_id: int,
         page: int = 1
@@ -299,17 +242,21 @@ class BotHandlers:
             )
             
             keyboard = pagination_keyboard(urls, page, total_pages, user_id)
-
-        await self._edit_or_reply_text(
-            update_or_query,
-            message,
-            reply_markup=keyboard,
-            parse_mode=ParseMode.MARKDOWN,
-        )
+        
+        if update.callback_query:
+            await update.callback_query.edit_message_text(
+                message,
+                reply_markup=keyboard
+            )
+        else:
+            await update.message.reply_text(
+                message,
+                reply_markup=keyboard
+            )
     
     async def _show_user_stats(
         self,
-        update_or_query,
+        update: Update,
         context: ContextTypes.DEFAULT_TYPE,
         user_id: int
     ):
@@ -340,13 +287,19 @@ class BotHandlers:
             )
             
             keyboard = user_stats_keyboard()
-
-        await self._edit_or_reply_text(
-            update_or_query,
-            message,
-            reply_markup=keyboard,
-            parse_mode=ParseMode.MARKDOWN,
-        )
+        
+        if update.callback_query:
+            await update.callback_query.edit_message_text(
+                message,
+                reply_markup=keyboard,
+                parse_mode=ParseMode.MARKDOWN
+            )
+        else:
+            await update.message.reply_text(
+                message,
+                reply_markup=keyboard,
+                parse_mode=ParseMode.MARKDOWN
+            )
     
     async def _process_url_shortening(
         self,
@@ -664,17 +617,6 @@ def create_bot_application() -> Application:
     
     # Callback handlers
     application.add_handler(CallbackQueryHandler(handlers.button_callback))
-
-    async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
-        logger.exception("Unhandled exception while processing update", exc_info=context.error)
-        try:
-            if isinstance(update, Update) and update.callback_query:
-                await update.callback_query.answer("❌ משהו השתבש. נסה שוב בעוד רגע.", show_alert=True)
-        except Exception:
-            # לא להרים חריגה מתוך error handler
-            pass
-
-    application.add_error_handler(on_error)
     
     # Message handlers (text)
     application.add_handler(
