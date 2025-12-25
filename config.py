@@ -5,6 +5,8 @@ URL Shortener Bot - Configuration
 """
 
 import os
+import hashlib
+import re
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -16,6 +18,15 @@ class Config:
     # Telegram Bot
     BOT_TOKEN = os.getenv('BOT_TOKEN')
     WEBHOOK_URL = os.getenv('WEBHOOK_URL')  # e.g., https://yourapp.onrender.com
+    # Telegram webhook secret token:
+    # Telegram requires only [A-Za-z0-9_-] and length 1..256.
+    # Never use BOT_TOKEN here (it contains ':' which is invalid).
+    _WEBHOOK_SECRET_TOKEN_ENV = os.getenv("WEBHOOK_SECRET_TOKEN")
+    WEBHOOK_SECRET_TOKEN = (
+        _WEBHOOK_SECRET_TOKEN_ENV
+        if _WEBHOOK_SECRET_TOKEN_ENV
+        else (hashlib.sha256(BOT_TOKEN.encode("utf-8")).hexdigest() if BOT_TOKEN else None)
+    )
     
     # MongoDB
     MONGODB_URI = os.getenv('MONGODB_URI')
@@ -55,6 +66,16 @@ class Config:
         
         if not cls.WEBHOOK_URL and not cls.DEBUG:
             errors.append("WEBHOOK_URL is required in production")
+
+        # Validate webhook secret token if available (it should always exist when BOT_TOKEN exists).
+        if cls.WEBHOOK_SECRET_TOKEN:
+            if not re.fullmatch(r"[A-Za-z0-9_-]{1,256}", cls.WEBHOOK_SECRET_TOKEN):
+                errors.append(
+                    "WEBHOOK_SECRET_TOKEN is invalid (must match [A-Za-z0-9_-]{1,256})"
+                )
+        elif not cls.DEBUG:
+            # In production we must be able to validate incoming Telegram updates.
+            errors.append("WEBHOOK_SECRET_TOKEN is required in production")
         
         if errors:
             raise ValueError(f"Configuration errors: {', '.join(errors)}")

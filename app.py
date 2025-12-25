@@ -64,7 +64,7 @@ async def webhook():
         # אימות בסיסי: Telegram ישלח את ה-secret token ב-header
         # כך לא צריך לחשוף את BOT_TOKEN ב-URL (וגם נמנעות בעיות עם ':' בנתיב).
         secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
-        if secret != Config.BOT_TOKEN:
+        if not secret or secret != Config.WEBHOOK_SECRET_TOKEN:
             return jsonify({"status": "forbidden"}), 403
 
         # קבלת העדכון מטלגרם
@@ -313,7 +313,7 @@ async def setup_webhook():
         
         await bot_application.bot.set_webhook(
             url=webhook_url,
-            secret_token=Config.BOT_TOKEN,
+            secret_token=Config.WEBHOOK_SECRET_TOKEN,
             drop_pending_updates=True,
             allowed_updates=["message", "callback_query"]
         )
