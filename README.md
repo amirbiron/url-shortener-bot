@@ -176,7 +176,8 @@ python app.py
 
 # Terminal 2 - הגדר webhook (פעם אחת)
 curl -X POST "https://api.telegram.org/bot<YOUR_BOT_TOKEN>/setWebhook" \
-  -d "url=https://your-ngrok-url.ngrok.io/<YOUR_BOT_TOKEN>"
+  -d "url=https://your-ngrok-url.ngrok.io/telegram/webhook" \
+  -d "secret_token=<YOUR_BOT_TOKEN>"
 ```
 
 **טיפ:** השתמש ב-[ngrok](https://ngrok.com) כדי לחשוף localhost:
@@ -355,7 +356,8 @@ db.users.createIndex({ user_id: 1 }, { unique: true })
 - נסה להגדיר את ה-webhook מחדש:
   ```bash
   curl -X POST "https://api.telegram.org/bot<TOKEN>/setWebhook" \
-    -d "url=https://your-app.onrender.com/<TOKEN>"
+    -d "url=https://your-app.onrender.com/telegram/webhook" \
+    -d "secret_token=<TOKEN>"
   ```
 
 ## 🔄 עדכונים
