@@ -430,13 +430,11 @@ class UserRepository:
             if not user:
                 return None
             
-            # יבוא זמני של URLRepository
-            from database import db
-            url_repo = URLRepository(db)
-            
-            total_urls = url_repo.count_by_user(user_id)
-            total_clicks = url_repo.get_total_clicks(user_id)
-            top_urls = url_repo.get_top_urls(user_id, limit=1)
+            repo = get_url_repo()
+
+            total_urls = repo.count_by_user(user_id)
+            total_clicks = repo.get_total_clicks(user_id)
+            top_urls = repo.get_top_urls(user_id, limit=1)
             
             return {
                 "user_id": user_id,
@@ -451,44 +449,103 @@ class UserRepository:
             return None
 
 
-# Singleton instance
-db = Database()
-url_repo = URLRepository(db)
-user_repo = UserRepository(db)
+_db: Database | None = None
+_url_repo: URLRepository | None = None
+_user_repo: UserRepository | None = None
+
+
+def _ensure_initialized() -> None:
+    """
+    Lazy initialization to avoid blocking app import/startup.
+
+    Render/Hypercorn can enforce a lifespan startup timeout; connecting to MongoDB
+    (and creating indexes) during module import can delay or fail boot.
+    """
+    global _db, _url_repo, _user_repo
+    if _db is not None and _url_repo is not None and _user_repo is not None:
+        return
+
+    _db = Database()
+    _url_repo = URLRepository(_db)
+    _user_repo = UserRepository(_db)
+
+
+def get_db() -> Database:
+    _ensure_initialized()
+    # mypy/pyright: ensured by _ensure_initialized
+    return _db  # type: ignore[return-value]
+
+
+def get_url_repo() -> URLRepository:
+    _ensure_initialized()
+    return _url_repo  # type: ignore[return-value]
+
+
+def get_user_repo() -> UserRepository:
+    _ensure_initialized()
+    return _user_repo  # type: ignore[return-value]
+
+
+class _LazyProxy:
+    """
+    Minimal proxy for backward compatibility with `db`, `url_repo`, `user_repo`
+    imports throughout the codebase.
+    """
+
+    def __init__(self, getter):
+        self._getter = getter
+
+    def __getattr__(self, item):
+        return getattr(self._getter(), item)
+
+
+class _LazyDB(_LazyProxy):
+    def close(self):
+        # Don't force initialization just to close.
+        global _db
+        if _db is None:
+            return
+        _db.close()
+
+
+# Backward-compatible module attributes
+db = _LazyDB(get_db)
+url_repo = _LazyProxy(get_url_repo)
+user_repo = _LazyProxy(get_user_repo)
 
 
 # Helper functions (shortcuts)
 def create_url(user_id: int, original_url: str, short_code: str) -> Optional[Dict]:
     """Shortcut for url_repo.create()"""
-    return url_repo.create(user_id, original_url, short_code)
+    return get_url_repo().create(user_id, original_url, short_code)
 
 
 def get_url(short_code: str) -> Optional[Dict]:
     """Shortcut for url_repo.get_by_short_code()"""
-    return url_repo.get_by_short_code(short_code)
+    return get_url_repo().get_by_short_code(short_code)
 
 
 def increment_clicks(short_code: str) -> bool:
     """Shortcut for url_repo.increment_clicks()"""
-    return url_repo.increment_clicks(short_code)
+    return get_url_repo().increment_clicks(short_code)
 
 
 def get_user_urls(user_id: int, page: int = 1, per_page: int = 10) -> List[Dict]:
     """Shortcut for url_repo.find_by_user() with page calculation"""
     skip = (page - 1) * per_page
-    return url_repo.find_by_user(user_id, skip=skip, limit=per_page)
+    return get_url_repo().find_by_user(user_id, skip=skip, limit=per_page)
 
 
 def count_user_urls(user_id: int) -> int:
     """Shortcut for url_repo.count_by_user()"""
-    return url_repo.count_by_user(user_id)
+    return get_url_repo().count_by_user(user_id)
 
 
 def create_or_update_user(user_id: int, **kwargs) -> Optional[Dict]:
     """Shortcut for user_repo.create_or_update()"""
-    return user_repo.create_or_update(user_id, **kwargs)
+    return get_user_repo().create_or_update(user_id, **kwargs)
 
 
 def get_user_stats(user_id: int) -> Optional[Dict]:
     """Shortcut for user_repo.get_stats()"""
-    return user_repo.get_stats(user_id)
+    return get_user_repo().get_stats(user_id)
