@@ -20,32 +20,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Reduce noisy HTTP client logs (and prevent leaking bot token in request URLs)
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("httpcore").setLevel(logging.WARNING)
-
-
-class _RedactSecretsFilter(logging.Filter):
-    """Best-effort redaction of sensitive tokens from logs."""
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        try:
-            token = Config.BOT_TOKEN
-            if not token:
-                return True
-
-            msg = record.getMessage()
-            redacted = msg.replace(token, "[REDACTED_BOT_TOKEN]")
-            record.msg = redacted
-            record.args = ()
-        except Exception:
-            return True
-        return True
-
-
-for _handler in logging.getLogger().handlers:
-    _handler.addFilter(_RedactSecretsFilter())
-
 # יצירת Quart app (ASGI) - מתאים ל-Hypercorn ול-async lifecycle hooks
 app = Quart(__name__)
 app.config['SECRET_KEY'] = Config.SECRET_KEY
