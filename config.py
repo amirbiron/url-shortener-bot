@@ -137,9 +137,8 @@ class Messages:
 🔗 **קישור מקורי:**
 {original_url}
 
-🎯 **קישור קצר:**
+🎯 **קישור קצר (לחץ על הקישור המקוצר להעתקה):**
 `{short_url}`
-לחץ על הקישור המקוצר להעתקה
 
 📊 **קוד:** `{short_code}`
 📅 **נוצר:** {created_at}
