@@ -5,7 +5,11 @@ URL Shortener Bot - Main Bot Logic
 """
 
 import logging
+import asyncio
+import random
+from collections.abc import Awaitable, Callable
 from telegram import Update, InputFile, CallbackQuery
+from telegram.error import NetworkError, RetryAfter, TimedOut
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -55,6 +59,36 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Reduce noisy HTTP client logs (and prevent leaking bot token in request URLs)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+
+class _RedactSecretsFilter(logging.Filter):
+    """Best-effort redaction of sensitive tokens from logs."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            token = Config.BOT_TOKEN
+            if not token:
+                return True
+
+            # Format message first (handles %-style args), then redact.
+            msg = record.getMessage()
+            redacted = msg.replace(token, "[REDACTED_BOT_TOKEN]")
+
+            # Replace the record message so downstream handlers use the redacted version.
+            record.msg = redacted
+            record.args = ()
+        except Exception:
+            # Never break logging
+            return True
+        return True
+
+
+for _handler in logging.getLogger().handlers:
+    _handler.addFilter(_RedactSecretsFilter())
+
 
 class BotHandlers:
     """מחלקה המכילה את כל ה-handlers של הבוט"""
@@ -62,6 +96,46 @@ class BotHandlers:
     def __init__(self):
         # מצב המשתמש (לשמירת context בין הודעות)
         self.user_states = {}
+
+        # Retry settings for transient Telegram network errors
+        self._telegram_max_attempts = 3
+        self._telegram_base_delay_seconds = 1.0
+
+    async def _call_telegram_with_retry(
+        self,
+        action: str,
+        call: Callable[[], Awaitable],
+        *,
+        max_attempts: int | None = None,
+    ):
+        """
+        Wrap Telegram API calls with retry/backoff for transient network timeouts.
+        """
+        attempts = max_attempts or self._telegram_max_attempts
+
+        for attempt in range(1, attempts + 1):
+            try:
+                return await call()
+            except RetryAfter as e:
+                # Telegram asked us to slow down
+                delay = float(getattr(e, "retry_after", 1.0)) + 0.5
+                logger.warning("Telegram retry_after during %s (attempt %s/%s): %s", action, attempt, attempts, e)
+                await asyncio.sleep(delay)
+            except (TimedOut, NetworkError) as e:
+                if attempt >= attempts:
+                    logger.warning("Telegram network error during %s (giving up): %s", action, e)
+                    return None
+
+                delay = self._telegram_base_delay_seconds * (2 ** (attempt - 1)) + random.random()
+                logger.warning(
+                    "Telegram network error during %s (attempt %s/%s). Retrying in %.1fs: %s",
+                    action,
+                    attempt,
+                    attempts,
+                    delay,
+                    e,
+                )
+                await asyncio.sleep(delay)
 
     async def _edit_or_reply_text(
         self,
@@ -78,43 +152,55 @@ class BotHandlers:
         - CallbackQuery (לחיצות על כפתורים)
         """
         if isinstance(update_or_query, CallbackQuery):
-            await update_or_query.edit_message_text(
-                message,
-                reply_markup=reply_markup,
-                parse_mode=parse_mode,
-                disable_web_page_preview=disable_web_page_preview,
+            await self._call_telegram_with_retry(
+                "edit_message_text",
+                lambda: update_or_query.edit_message_text(
+                    message,
+                    reply_markup=reply_markup,
+                    parse_mode=parse_mode,
+                    disable_web_page_preview=disable_web_page_preview,
+                ),
             )
             return
 
         # Update (או אובייקט דומה)
         callback_query = getattr(update_or_query, "callback_query", None)
         if callback_query:
-            await callback_query.edit_message_text(
-                message,
-                reply_markup=reply_markup,
-                parse_mode=parse_mode,
-                disable_web_page_preview=disable_web_page_preview,
+            await self._call_telegram_with_retry(
+                "edit_message_text",
+                lambda: callback_query.edit_message_text(
+                    message,
+                    reply_markup=reply_markup,
+                    parse_mode=parse_mode,
+                    disable_web_page_preview=disable_web_page_preview,
+                ),
             )
             return
 
         msg = getattr(update_or_query, "message", None)
         if msg:
-            await msg.reply_text(
-                message,
-                reply_markup=reply_markup,
-                parse_mode=parse_mode,
-                disable_web_page_preview=disable_web_page_preview,
+            await self._call_telegram_with_retry(
+                "reply_text",
+                lambda: msg.reply_text(
+                    message,
+                    reply_markup=reply_markup,
+                    parse_mode=parse_mode,
+                    disable_web_page_preview=disable_web_page_preview,
+                ),
             )
             return
 
         # fallback אחרון: שליחה ישירה לצ'אט אם אפשר
         chat = getattr(update_or_query, "effective_chat", None)
         if chat:
-            await chat.send_message(
-                message,
-                reply_markup=reply_markup,
-                parse_mode=parse_mode,
-                disable_web_page_preview=disable_web_page_preview,
+            await self._call_telegram_with_retry(
+                "send_message",
+                lambda: chat.send_message(
+                    message,
+                    reply_markup=reply_markup,
+                    parse_mode=parse_mode,
+                    disable_web_page_preview=disable_web_page_preview,
+                ),
             )
             return
         
@@ -134,10 +220,11 @@ class BotHandlers:
             last_name=user.last_name
         )
         
-        await update.message.reply_text(
+        await self._edit_or_reply_text(
+            update,
             Messages.START,
             reply_markup=main_menu_keyboard(),
-            parse_mode=ParseMode.MARKDOWN
+            parse_mode=ParseMode.MARKDOWN,
         )
         
         logger.info(f"User {user.id} (@{user.username}) started the bot")
@@ -146,10 +233,11 @@ class BotHandlers:
         """
         פקודת /help - עזרה
         """
-        await update.message.reply_text(
+        await self._edit_or_reply_text(
+            update,
             Messages.HELP,
             reply_markup=back_keyboard(),
-            parse_mode=ParseMode.MARKDOWN
+            parse_mode=ParseMode.MARKDOWN,
         )
     
     async def shorten_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -162,22 +250,24 @@ class BotHandlers:
         can_proceed, wait_minutes = rate_limiter.check_limit(user_id)
         
         if not can_proceed:
-            await update.message.reply_text(
+            await self._edit_or_reply_text(
+                update,
                 Messages.ERROR_RATE_LIMIT.format(
                     max_urls=Config.MAX_URLS_PER_HOUR,
-                    wait_time=wait_minutes
+                    wait_time=wait_minutes,
                 ),
-                reply_markup=back_keyboard()
+                reply_markup=back_keyboard(),
             )
             return
         
         # הגדרת מצב המתנה ל-URL
         self.user_states[user_id] = 'waiting_for_url'
         
-        await update.message.reply_text(
+        await self._edit_or_reply_text(
+            update,
             Messages.SEND_URL,
             reply_markup=back_keyboard(),
-            parse_mode=ParseMode.MARKDOWN
+            parse_mode=ParseMode.MARKDOWN,
         )
     
     async def mylinks_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -204,7 +294,7 @@ class BotHandlers:
         user_id = query.from_user.id
         data = query.data
         
-        await query.answer()
+        await self._call_telegram_with_retry("answer_callback_query", lambda: query.answer())
         
         logger.info(f"User {user_id} clicked button: {data}")
         
@@ -262,9 +352,10 @@ class BotHandlers:
             self.user_states[user_id] = None
         else:
             # הודעה כללית
-            await update.message.reply_text(
+            await self._edit_or_reply_text(
+                update,
                 "לא הבנתי 🤔\n\nלחץ על /start לתפריט הראשי",
-                reply_markup=back_keyboard()
+                reply_markup=back_keyboard(),
             )
     
     # ==================== Helper Methods ====================
@@ -377,9 +468,10 @@ class BotHandlers:
             else:
                 message = Messages.ERROR_GENERAL
             
-            await update.message.reply_text(
+            await self._edit_or_reply_text(
+                update,
                 message,
-                reply_markup=back_keyboard()
+                reply_markup=back_keyboard(),
             )
             return
         
@@ -413,9 +505,10 @@ class BotHandlers:
                     break
             
             if not short_code:
-                await update.message.reply_text(
+                await self._edit_or_reply_text(
+                    update,
                     Messages.ERROR_GENERAL,
-                    reply_markup=back_keyboard()
+                    reply_markup=back_keyboard(),
                 )
                 return
             
@@ -423,9 +516,10 @@ class BotHandlers:
             url_doc = create_url(user_id, url, short_code)
             
             if not url_doc:
-                await update.message.reply_text(
+                await self._edit_or_reply_text(
+                    update,
                     Messages.ERROR_GENERAL,
-                    reply_markup=back_keyboard()
+                    reply_markup=back_keyboard(),
                 )
                 return
             
@@ -448,21 +542,23 @@ class BotHandlers:
         # שליחת התשובה
         keyboard = url_actions_keyboard(short_code, short_url)
         
-        await update.message.reply_text(
+        await self._edit_or_reply_text(
+            update,
             message,
             reply_markup=keyboard,
             parse_mode=ParseMode.MARKDOWN,
-            disable_web_page_preview=True
+            disable_web_page_preview=True,
         )
     
     # ==================== Button Handlers ====================
     
     async def _handle_main_menu(self, query, context):
         """טיפול בכפתור תפריט ראשי"""
-        await query.edit_message_text(
+        await self._edit_or_reply_text(
+            query,
             Messages.START,
             reply_markup=main_menu_keyboard(),
-            parse_mode=ParseMode.MARKDOWN
+            parse_mode=ParseMode.MARKDOWN,
         )
     
     async def _handle_shorten_new(self, query, context, user_id):
@@ -471,22 +567,24 @@ class BotHandlers:
         can_proceed, wait_minutes = rate_limiter.check_limit(user_id)
         
         if not can_proceed:
-            await query.edit_message_text(
+            await self._edit_or_reply_text(
+                query,
                 Messages.ERROR_RATE_LIMIT.format(
                     max_urls=Config.MAX_URLS_PER_HOUR,
-                    wait_time=wait_minutes
+                    wait_time=wait_minutes,
                 ),
-                reply_markup=back_keyboard()
+                reply_markup=back_keyboard(),
             )
             return
         
         # הגדרת מצב המתנה
         self.user_states[user_id] = 'waiting_for_url'
         
-        await query.edit_message_text(
+        await self._edit_or_reply_text(
+            query,
             Messages.SEND_URL,
             reply_markup=back_keyboard(),
-            parse_mode=ParseMode.MARKDOWN
+            parse_mode=ParseMode.MARKDOWN,
         )
     
     async def _handle_my_links(self, query, context, user_id):
@@ -499,10 +597,11 @@ class BotHandlers:
     
     async def _handle_help(self, query, context):
         """טיפול בכפתור עזרה"""
-        await query.edit_message_text(
+        await self._edit_or_reply_text(
+            query,
             Messages.HELP,
             reply_markup=back_keyboard(),
-            parse_mode=ParseMode.MARKDOWN
+            parse_mode=ParseMode.MARKDOWN,
         )
     
     async def _handle_view_url(self, query, context, short_code):
@@ -510,9 +609,10 @@ class BotHandlers:
         url_doc = get_url(short_code)
         
         if not url_doc:
-            await query.edit_message_text(
+            await self._edit_or_reply_text(
+                query,
                 Messages.ERROR_NOT_FOUND,
-                reply_markup=back_keyboard()
+                reply_markup=back_keyboard(),
             )
             return
         
@@ -526,11 +626,12 @@ class BotHandlers:
             created_at=created_at
         )
         
-        await query.edit_message_text(
+        await self._edit_or_reply_text(
+            query,
             message,
             reply_markup=url_actions_keyboard(short_code, short_url),
             parse_mode=ParseMode.MARKDOWN,
-            disable_web_page_preview=True
+            disable_web_page_preview=True,
         )
     
     async def _handle_stats(self, query, context, short_code):
@@ -538,9 +639,10 @@ class BotHandlers:
         url_doc = get_url(short_code)
         
         if not url_doc:
-            await query.edit_message_text(
+            await self._edit_or_reply_text(
+                query,
                 Messages.ERROR_NOT_FOUND,
-                reply_markup=back_keyboard()
+                reply_markup=back_keyboard(),
             )
             return
         
@@ -560,11 +662,12 @@ class BotHandlers:
             short_url=short_url
         )
         
-        await query.edit_message_text(
+        await self._edit_or_reply_text(
+            query,
             message,
             reply_markup=stats_keyboard(short_code),
             parse_mode=ParseMode.MARKDOWN,
-            disable_web_page_preview=True
+            disable_web_page_preview=True,
         )
     
     async def _handle_qr(self, query, context, short_code, user_id):
@@ -572,7 +675,10 @@ class BotHandlers:
         url_doc = get_url(short_code)
         
         if not url_doc:
-            await query.answer("❌ הקישור לא נמצא", show_alert=True)
+            await self._call_telegram_with_retry(
+                "answer_callback_query",
+                lambda: query.answer("❌ הקישור לא נמצא", show_alert=True),
+            )
             return
         
         # בדיקת בעלות (אופציונלי - אפשר להסיר אם רוצים לאפשר לכולם)
@@ -586,36 +692,49 @@ class BotHandlers:
             qr_image = generate_qr(short_url)
             
             # שליחת התמונה
-            await query.message.reply_photo(
-                photo=InputFile(qr_image, filename=f'qr_{short_code}.png'),
-                caption=Messages.QR_GENERATED,
-                reply_markup=qr_keyboard(short_code)
+            await self._call_telegram_with_retry(
+                "reply_photo",
+                lambda: query.message.reply_photo(
+                    photo=InputFile(qr_image, filename=f'qr_{short_code}.png'),
+                    caption=Messages.QR_GENERATED,
+                    reply_markup=qr_keyboard(short_code),
+                ),
             )
             
-            await query.answer("✅ QR Code נוצר!")
+            await self._call_telegram_with_retry(
+                "answer_callback_query",
+                lambda: query.answer("✅ QR Code נוצר!"),
+            )
             
             logger.info(f"Generated QR for {short_code}")
             
         except Exception as e:
             logger.error(f"Error generating QR: {e}")
-            await query.answer("❌ שגיאה ביצירת QR", show_alert=True)
+            await self._call_telegram_with_retry(
+                "answer_callback_query",
+                lambda: query.answer("❌ שגיאה ביצירת QR", show_alert=True),
+            )
     
     async def _handle_delete_confirm(self, query, context, short_code):
         """טיפול באישור מחיקה"""
         url_doc = get_url(short_code)
         
         if not url_doc:
-            await query.answer("❌ הקישור לא נמצא", show_alert=True)
+            await self._call_telegram_with_retry(
+                "answer_callback_query",
+                lambda: query.answer("❌ הקישור לא נמצא", show_alert=True),
+            )
             return
         
         short_url = f"{Config.BASE_URL}/{short_code}"
         
         message = Messages.CONFIRM_DELETE.format(short_url=short_url)
         
-        await query.edit_message_text(
+        await self._edit_or_reply_text(
+            query,
             message,
             reply_markup=delete_confirm_keyboard(short_code),
-            parse_mode=ParseMode.MARKDOWN
+            parse_mode=ParseMode.MARKDOWN,
         )
     
     async def _handle_delete_confirmed(self, query, context, short_code, user_id):
@@ -624,13 +743,17 @@ class BotHandlers:
         success = url_repo.delete(short_code, user_id)
         
         if success:
-            await query.edit_message_text(
+            await self._edit_or_reply_text(
+                query,
                 Messages.DELETED_SUCCESS,
-                reply_markup=back_keyboard()
+                reply_markup=back_keyboard(),
             )
             logger.info(f"User {user_id} deleted URL: {short_code}")
         else:
-            await query.answer("❌ שגיאה במחיקה", show_alert=True)
+            await self._call_telegram_with_retry(
+                "answer_callback_query",
+                lambda: query.answer("❌ שגיאה במחיקה", show_alert=True),
+            )
     
     async def _handle_pagination(self, query, context, user_id, page):
         """טיפול בניווט בין עמודים"""
@@ -650,7 +773,26 @@ def create_bot_application() -> Application:
     Config.validate()
     
     # יצירת Application
-    application = Application.builder().token(Config.BOT_TOKEN).build()
+    builder = Application.builder().token(Config.BOT_TOKEN)
+
+    # Best-effort: increase HTTP timeouts to reduce transient Telegram API timeouts.
+    # (Guarded to avoid breaking on PTB API changes.)
+    try:
+        from telegram.request import HTTPXRequest  # type: ignore
+
+        if hasattr(builder, "request"):
+            builder = builder.request(
+                HTTPXRequest(
+                    connect_timeout=10.0,
+                    read_timeout=20.0,
+                    write_timeout=20.0,
+                    pool_timeout=10.0,
+                )
+            )
+    except Exception as e:
+        logger.warning("Could not configure custom Telegram HTTP request timeouts: %s", e)
+
+    application = builder.build()
     
     # יצירת instance של handlers
     handlers = BotHandlers()
@@ -666,7 +808,13 @@ def create_bot_application() -> Application:
     application.add_handler(CallbackQueryHandler(handlers.button_callback))
 
     async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
-        logger.exception("Unhandled exception while processing update", exc_info=context.error)
+        err = context.error
+        # Avoid noisy stack traces for transient Telegram network issues.
+        if isinstance(err, (TimedOut, NetworkError, RetryAfter)):
+            logger.warning("Telegram transient error while processing update: %s", err)
+            return
+
+        logger.exception("Unhandled exception while processing update", exc_info=err)
         try:
             if isinstance(update, Update) and update.callback_query:
                 await update.callback_query.answer("❌ משהו השתבש. נסה שוב בעוד רגע.", show_alert=True)
