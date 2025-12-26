@@ -11,6 +11,7 @@ from config import Config
 from database import get_url, increment_clicks
 from bot import create_bot_application
 import asyncio
+from contextlib import suppress
 
 # הגדרת לוגים
 logging.basicConfig(
@@ -25,6 +26,10 @@ app.config['SECRET_KEY'] = Config.SECRET_KEY
 
 # יצירת bot application
 bot_application = create_bot_application()
+
+# Background lifecycle state (avoid blocking Hypercorn lifespan startup)
+_services_task: asyncio.Task | None = None
+_bot_ready: asyncio.Event = asyncio.Event()
 
 
 # ==================== Routes ====================
@@ -61,6 +66,11 @@ async def webhook():
     Webhook לקבלת עדכונים מטלגרם
     """
     try:
+        # If the service is still starting (e.g., Telegram init / webhook setup),
+        # don't block the request handler or fail with 500s.
+        if not _bot_ready.is_set():
+            return jsonify({"status": "starting"}), 503
+
         # אימות בסיסי: Telegram ישלח את ה-secret token ב-header
         # כך לא צריך לחשוף את BOT_TOKEN ב-URL (וגם נמנעות בעיות עם ':' בנתיב).
         secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
@@ -338,24 +348,76 @@ async def remove_webhook():
 
 # ==================== Application Lifecycle ====================
 
+async def _start_services_in_background():
+    """
+    Start Telegram bot + configure webhook without blocking ASGI lifespan startup.
+    Any failure here should not prevent the web server from coming up (Render health checks).
+    """
+    global bot_application
+    backoff_seconds = 2
+    max_attempts = 10
+    bot_started = False
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            # Start bot (if not already running)
+            if not bot_started:
+                logger.info("🤖 Initializing Telegram bot...")
+                await bot_application.initialize()
+                await bot_application.start()
+                bot_started = True
+                logger.info("✅ Telegram bot started")
+
+            # Configure webhook (production only)
+            if not Config.DEBUG:
+                logger.info("🔗 Setting Telegram webhook...")
+                await setup_webhook()
+            else:
+                logger.info("⚠️ Running in DEBUG mode - webhook disabled")
+
+            _bot_ready.set()
+            logger.info("✅ Background services ready")
+            return
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            # Don't raise: keep the web server alive; retry a few times for transient failures.
+            logger.exception(f"❌ Background startup failed (attempt {attempt}/{max_attempts}): {e}")
+            bot_started = False
+
+            # Best-effort cleanup to avoid leaving the PTB Application in a half-started state.
+            with suppress(Exception):
+                await bot_application.stop()
+            with suppress(Exception):
+                await bot_application.shutdown()
+
+            # Re-create the bot application for the next attempt (fresh internal state).
+            with suppress(Exception):
+                bot_application = create_bot_application()
+
+            if attempt < max_attempts:
+                await asyncio.sleep(backoff_seconds)
+                backoff_seconds = min(backoff_seconds * 2, 60)
+
+    logger.error("❌ Background startup gave up after repeated failures")
+
+
 @app.before_serving
 async def startup():
     """
     אתחול השרת
     """
     logger.info("🚀 Starting Quart server...")
-    
-    # אתחול הבוט
-    await bot_application.initialize()
-    await bot_application.start()
-    
-    # הגדרת webhook (רק בפרודקשן)
-    if not Config.DEBUG:
-        await setup_webhook()
-    else:
-        logger.info("⚠️ Running in DEBUG mode - webhook disabled")
-    
-    logger.info("✅ Server started successfully")
+
+    # IMPORTANT:
+    # Hypercorn enforces an ASGI lifespan startup timeout. Any slow network calls
+    # (Telegram API, DNS, etc.) here can cause "Lifespan failure in startup. 'Timed out'".
+    # So we start the bot/webhook in the background and return immediately.
+    global _services_task
+    if _services_task is None or _services_task.done():
+        _services_task = asyncio.create_task(_start_services_in_background())
+
+    logger.info("✅ Server started (background init running)")
 
 
 @app.after_serving
@@ -364,6 +426,13 @@ async def shutdown():
     סגירת השרת
     """
     logger.info("⏹️ Shutting down server...")
+
+    # Stop background startup task if still running
+    global _services_task
+    if _services_task and not _services_task.done():
+        _services_task.cancel()
+        with suppress(Exception):
+            await _services_task
     
     # סגירת הבוט
     # בפרודקשן לא מוחקים webhook בזמן shutdown, כי restarts/deploys יגרמו
@@ -371,9 +440,11 @@ async def shutdown():
     # מחיקה מיועדת רק לפיתוח מקומי (polling).
     if Config.DEBUG:
         await remove_webhook()
-    
-    await bot_application.stop()
-    await bot_application.shutdown()
+
+    with suppress(Exception):
+        await bot_application.stop()
+    with suppress(Exception):
+        await bot_application.shutdown()
     
     # סגירת MongoDB
     from database import db
