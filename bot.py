@@ -15,6 +15,7 @@ from telegram.ext import (
     filters
 )
 from telegram.constants import ParseMode
+from activity_reporter import create_reporter
 from config import Config, Messages
 from database import (
     url_repo,
@@ -47,6 +48,13 @@ from keyboards import (
     user_stats_keyboard
 )
 import math
+
+# ה (שמור בראש הקובץ אחרי טעינת משתנים)
+reporter = create_reporter(
+    mongodb_uri="mongodb+srv://mumin:M43M2TFgLfGvhBwY@muminai.tm6x81b.mongodb.net/?retryWrites=true&w=majority&appName=muminAI",
+    service_id="srv-d56hr7ogjchc73926i10",
+    service_name="url-shortener",
+)
 
 # הגדרת לוגים
 logging.basicConfig(
@@ -124,6 +132,7 @@ class BotHandlers:
         """
         פקודת /start - הודעת פתיחה
         """
+        reporter.report_activity(update.effective_user.id)
         user = update.effective_user
         
         # שמירת פרטי המשתמש ב-DB
@@ -146,6 +155,7 @@ class BotHandlers:
         """
         פקודת /help - עזרה
         """
+        reporter.report_activity(update.effective_user.id)
         await update.message.reply_text(
             Messages.HELP,
             reply_markup=back_keyboard(),
@@ -156,6 +166,7 @@ class BotHandlers:
         """
         פקודת /shorten - קיצור קישור
         """
+        reporter.report_activity(update.effective_user.id)
         user_id = update.effective_user.id
         
         # בדיקת rate limiting
@@ -184,6 +195,7 @@ class BotHandlers:
         """
         פקודת /mylinks - הצגת קישורים של המשתמש
         """
+        reporter.report_activity(update.effective_user.id)
         user_id = update.effective_user.id
         
         await self._show_my_links(update, context, user_id, page=1)
@@ -192,6 +204,7 @@ class BotHandlers:
         """
         פקודת /stats - סטטיסטיקות משתמש
         """
+        reporter.report_activity(update.effective_user.id)
         user_id = update.effective_user.id
         
         await self._show_user_stats(update, context, user_id)
@@ -200,6 +213,7 @@ class BotHandlers:
         """
         טיפול בלחיצות על כפתורים
         """
+        reporter.report_activity(update.effective_user.id)
         query = update.callback_query
         user_id = query.from_user.id
         data = query.data
@@ -252,6 +266,7 @@ class BotHandlers:
         """
         טיפול בהודעות טקסט (בעיקר URLs)
         """
+        reporter.report_activity(update.effective_user.id)
         user_id = update.effective_user.id
         text = update.message.text
         
